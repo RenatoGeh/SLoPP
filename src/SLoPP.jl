@@ -36,7 +36,7 @@ function _slopp(D::AbstractDataFrame, V::Vtree, k::Integer)::StructProbCircuit
   # If there is only one example, consider it as a conjunction over all assignments.
   elseif n == 1 return factorize(D, V) end
   # Cluster.
-  R = kmeans(transpose(Matrix(D)), k; display = :none)
+  R = kmeans(transpose(Matrix(D)), k; display = :none, maxiter = 100)
   # If all instances are the same, return a conjunction over all assignments.
   if any(x -> x == 0, R.counts) return factorize(D, V) end
   # Get indices.
@@ -73,8 +73,14 @@ function slopp(D::AbstractDataFrame, k::Integer; V::Union{Vtree, Nothing} = noth
 end
 export slopp
 
+function revise!(name::String, k::Integer, C::StructProbCircuit; args...)
+  print("Pulling dataset...")
+  train, valid, test = twenty_datasets(name)
+  println(" OK!")
+  return revise!(D, k, C, size(train, 1); args...)
+end
 function revise!(D::AbstractDataFrame, k::Integer, C::StructProbCircuit, n_original::Int;
-    seed::Integer = 0, alg::Symbol = :topdown)
+    seed::Integer = 0, alg::Symbol = :clt)
   if seed >= 0 Random.seed!(seed) end
   rename!(D, Symbol.(1:size(D, 2)))
   D_v = view(D, findall(isinf, log_likelihood_per_instance(C, D)), :)
@@ -91,7 +97,7 @@ function revise!(D::AbstractDataFrame, k::Integer, C::StructProbCircuit, n_origi
 end
 export revise!
 
-function slopp_from_data(name::String, k::Integer; seed::Integer = 0, alg::Symbol = :topdown,
+function slopp_from_data(name::String, k::Integer; seed::Integer = 1234, alg::Symbol = :topdown,
     param::Symbol = :none, args...)::StructProbCircuit
   print("Pulling dataset...")
   train, valid, test = twenty_datasets(name)
@@ -109,28 +115,33 @@ function slopp_from_data(name::String, k::Integer; seed::Integer = 0, alg::Symbo
 end
 export slopp_from_data
 
-function evaluate(name::String, C::StructProbCircuit; ignore::Bool = true)::Tuple{Float64, Float64, Float64}
+function evaluate(name::String, C::StructProbCircuit; ignore::Bool = true)::Tuple{Float64, Float64, Float64, Float64, Float64, Float64}
   print("Pulling dataset...")
   train, valid, test = twenty_datasets(name)
   rename!(train, Symbol.(1:size(train, 2)))
-  ev(circ, data) = !ignore ? log_likelihood_avg(circ, data) :
-                             sum(filter(x -> !isinf(x),
-                                        log_likelihood_per_instance(circ, data)))/size(data, 1)
+  function ev(circ, data)
+    if ignore
+      ll = log_likelihood_per_instance(circ, data)
+      n = length(ll)-count(isinf, ll)
+      return sum(filter(x -> !isinf(x), ll))/n
+    end
+    return log_likelihood_avg(circ, data)
+  end
   println(" OK!")
   print("Evaluating train set...")
-  ll_train = ev(C, train)
+  ll_train, train_ign = ev(C, train), count(isinf, log_likelihood_avg(C, train))
   print(" OK!\nEvaluating valid set...")
-  ll_valid = ev(C, valid)
+  ll_valid, valid_ign = ev(C, valid), count(isinf, log_likelihood_avg(C, valid))
   print(" OK!\nEvaluating test set...")
-  ll_test = ev(C, test)
+  ll_test, test_ign = ev(C, test), count(isinf, log_likelihood_avg(C, valid))
   println(" OK!")
-  return ll_train, ll_valid, ll_test
+  return ll_train, ll_valid, ll_test, train_ign, valid_ign, test_ign
 end
-function evaluate(name::String, k::Integer; seed::Integer = 0, alg::Symbol = :topdown,
-    param::Symbol = :none, ignore::Bool = true, args...)::Tuple{Float64, Float64, Float64, StructProbCircuit}
+function evaluate(name::String, k::Integer; seed::Integer = 1234, alg::Symbol = :clt,
+    param::Symbol = :none, ignore::Bool = true, args...)::Tuple{Float64, Float64, Float64, StructProbCircuit, Float64, Float64, Float64}
   C = slopp_from_data(name, k; seed, alg, param, args...)
-  ll_train, ll_valid, ll_test = evaluate(name, C; ignore)
-  return ll_train, ll_valid, ll_test, C
+  ll_train, ll_valid, ll_test, train_ign, valid_ign, test_ign = evaluate(name, C; ignore)
+  return ll_train, ll_valid, ll_test, C, train_ign, valid_ign, test_ign
 end
 export evaluate
 
